@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      - '8085:8085'
+    environment:
+      - API_URL=http://backend:5000
+      - PORT=8085
+    depends_on:
+      - backend
+
+  backend:
+    build: ./backend
+    ports:
+      - '5000:5000'
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/excel-insight
+      - PORT=5000
+      - NODE_ENV=development
+      - ALLOWED_ORIGINS=http://localhost:8085,http://localhost:5173,http://65.1.215.175:8085
+    depends_on:
+      - mongodb
+
+  mongodb:
+    image: mongo:6
+    ports:
+      - '27070:27017'
+    volumes:
+      - mongo-data:/data/db
+
+volumes:
+  mongo-data:

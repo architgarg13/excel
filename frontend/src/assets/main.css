@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .hover-lift {
+    @apply transition-transform duration-300 ease-in-out;
+  }
+  .hover-lift:hover {
+    transform: translateY(-3px);
+  }
+
+  .drag-glow {
+    @apply animate-scale-glow;
+  }
+
+  .glass {
+    @apply backdrop-blur-md bg-white/70 dark:bg-dark-card/70;
+  }
+}
+
+/* Accordion transitions */
+.accordion-enter-active,
+.accordion-leave-active {
+  transition: all 0.3s ease-in-out;
+  overflow: hidden;
+}
+
+.accordion-enter-from,
+.accordion-leave-to {
+  max-height: 0;
+  opacity: 0;
+}
+
+.accordion-enter-to,
+.accordion-leave-from {
+  max-height: 500px;
+  opacity: 1;
+}
