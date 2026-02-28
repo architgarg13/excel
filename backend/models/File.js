@@ -1,28 +1,20 @@
 const mongoose = require('mongoose');
 
-const fileSchema = new mongoose.Schema({
-  fileName: {
-    type: String,
-    required: true,
-  },
-  originalName: {
-    type: String,
-    required: true,
-  },
-  fileSize: {
-    type: Number,
-    required: true,
-  },
-  worksheets: [
-    {
-      name: { type: String, required: true },
-      headers: [{ type: String }],
-    },
-  ],
-  uploadedAt: {
-    type: Date,
-    default: Date.now,
-  },
+const sheetSchema = new mongoose.Schema({
+  sheetType: { type: String, required: true },
+  originalName: String,
+  headers: [String],
+  headerMapping: { type: Map, of: String, default: {} },
+  data: { type: [[mongoose.Schema.Types.Mixed]], default: [] },
+  uploadedAt: { type: Date, default: Date.now }
+}, { _id: false });
+
+const sessionSchema = new mongoose.Schema({
+  sessionId: { type: String, required: true, unique: true, index: true },
+  sheets: [sheetSchema],
+  output: { type: [[mongoose.Schema.Types.Mixed]], default: null },
+  outputHeaders: { type: [String], default: null },
+  createdAt: { type: Date, default: Date.now }
 });
 
-module.exports = mongoose.model('File', fileSchema);
+module.exports = mongoose.model('Session', sessionSchema);

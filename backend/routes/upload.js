@@ -38,7 +38,23 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
 });
 
-router.post('/upload', upload.single('file'), excelController.uploadExcel);
-router.get('/files', excelController.getFiles);
+// Session endpoints
+router.post('/session', excelController.createSession);
+router.get('/session/:id/status', excelController.getSessionStatus);
+
+// Per-sheet upload (file)
+router.post('/session/:id/upload/:sheetType', upload.single('file'), excelController.uploadSheet);
+
+// Per-sheet paste (JSON)
+router.post('/session/:id/paste/:sheetType', excelController.pasteSheet);
+
+// Header mapping
+router.put('/session/:id/mapping/:sheetType', excelController.saveMapping);
+
+// Generate IC output
+router.post('/session/:id/generate', excelController.generateOutput);
+
+// Download IC output as .xlsx
+router.get('/session/:id/download', excelController.downloadOutput);
 
 module.exports = router;
