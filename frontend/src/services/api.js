@@ -8,11 +8,11 @@ export function createSession() {
   return client.post('/session');
 }
 
-export function uploadSheet(sessionId, sheetType, file, onProgress) {
+export function uploadWorkbook(sessionId, file, onProgress) {
   const formData = new FormData();
   formData.append('file', file);
 
-  return client.post(`/session/${sessionId}/upload/${sheetType}`, formData, {
+  return client.post(`/session/${sessionId}/upload-workbook`, formData, {
     onUploadProgress: (event) => {
       if (onProgress && event.total) {
         const percent = Math.round((event.loaded * 100) / event.total);
@@ -22,8 +22,8 @@ export function uploadSheet(sessionId, sheetType, file, onProgress) {
   });
 }
 
-export function pasteSheet(sessionId, sheetType, rows) {
-  return client.post(`/session/${sessionId}/paste/${sheetType}`, { rows });
+export function mapWorksheets(sessionId, worksheetMappings) {
+  return client.post(`/session/${sessionId}/map-worksheets`, { worksheetMappings });
 }
 
 export function saveMapping(sessionId, sheetType, mapping) {

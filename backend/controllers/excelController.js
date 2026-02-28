@@ -3,7 +3,7 @@ const ExcelJS = require('exceljs');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const Session = require('../models/File');
-const { SHEET_TYPES, SHEET_ORDER } = require('../config/sheetConfig');
+const { SHEET_TYPES, SHEET_ORDER, matchWorksheetToSheetType, matchByHeaders } = require('../config/sheetConfig');
 const { calculateIC } = require('../services/icCalculator');
 
 // Auto-match uploaded headers to expected headers (case-insensitive)
@@ -27,6 +27,23 @@ function autoMatchHeaders(uploadedHeaders, expectedHeaders) {
   return { mapping, matched, needsMapping };
 }
 
+// Extract headers and data rows from a worksheet
+function extractSheetData(workbook, sheetName) {
+  const sheet = workbook.Sheets[sheetName];
+  const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+
+  const headerRow = jsonData[0] || [];
+  const uploadedHeaders = headerRow
+    .map((h) => (h != null && String(h).trim() !== '' ? String(h).trim() : null))
+    .filter((h) => h !== null);
+
+  const dataRows = jsonData.slice(1).filter((row) =>
+    row.some((cell) => cell != null && String(cell).trim() !== '')
+  );
+
+  return { uploadedHeaders, dataRows };
+}
+
 exports.createSession = async (req, res, next) => {
   try {
     const sessionId = uuidv4();
@@ -37,66 +54,116 @@ exports.createSession = async (req, res, next) => {
   }
 };
 
-exports.uploadSheet = async (req, res, next) => {
+exports.uploadWorkbook = async (req, res, next) => {
   try {
-    const { id: sessionId, sheetType } = req.params;
-
-    if (!SHEET_TYPES[sheetType]) {
-      return res.status(400).json({ error: `Invalid sheet type: ${sheetType}` });
-    }
+    const { id: sessionId } = req.params;
 
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded.' });
     }
 
-    const filePath = req.file.path;
-    const workbook = XLSX.readFile(filePath);
-    const firstSheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[firstSheetName];
-    const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
-
-    // Clean up temp file
-    fs.unlink(filePath, (err) => {
-      if (err) console.error('Failed to delete temp file:', err);
-    });
-
-    const headerRow = jsonData[0] || [];
-    const uploadedHeaders = headerRow
-      .map((h) => (h != null && String(h).trim() !== '' ? String(h).trim() : null))
-      .filter((h) => h !== null);
-
-    const dataRows = jsonData.slice(1).filter((row) =>
-      row.some((cell) => cell != null && String(cell).trim() !== '')
-    );
-
-    const expectedHeaders = SHEET_TYPES[sheetType].expectedHeaders;
-    const { mapping, matched, needsMapping } = autoMatchHeaders(uploadedHeaders, expectedHeaders);
-
     const session = await Session.findOne({ sessionId });
     if (!session) {
+      if (req.file && req.file.path) fs.unlink(req.file.path, () => {});
       return res.status(404).json({ error: 'Session not found' });
     }
 
-    // Remove existing sheet of same type
-    session.sheets = session.sheets.filter((s) => s.sheetType !== sheetType);
-    session.sheets.push({
-      sheetType,
-      originalName: req.file.originalname,
-      headers: uploadedHeaders,
-      headerMapping: mapping,
-      data: dataRows,
-      uploadedAt: new Date()
-    });
+    const filePath = req.file.path;
+    const workbook = XLSX.readFile(filePath);
+    const worksheetNames = workbook.SheetNames;
+
+    const matchedSheets = [];
+    const unmatchedWorksheets = [];
+    const matchedTypes = new Set();
+    const sheetsNeedingHeaderMapping = [];
+
+    // Pass 1: Name-based matching
+    const nameMatches = {}; // wsName -> sheetType
+    for (const wsName of worksheetNames) {
+      const sheetType = matchWorksheetToSheetType(wsName);
+      if (sheetType && !matchedTypes.has(sheetType)) {
+        nameMatches[wsName] = sheetType;
+        matchedTypes.add(sheetType);
+      }
+    }
+
+    // Pass 2: Header-based matching for unmatched worksheets
+    const headerMatches = {};
+    for (const wsName of worksheetNames) {
+      if (nameMatches[wsName]) continue;
+      const { uploadedHeaders } = extractSheetData(workbook, wsName);
+      const unmatchedTypes = SHEET_ORDER.filter(t => !matchedTypes.has(t));
+      if (unmatchedTypes.length === 0) break;
+      const bestMatch = matchByHeaders(uploadedHeaders, unmatchedTypes);
+      if (bestMatch) {
+        headerMatches[wsName] = bestMatch;
+        matchedTypes.add(bestMatch);
+      }
+    }
+
+    // Process all matched worksheets
+    session.sheets = [];
+    const allMatches = { ...nameMatches, ...headerMatches };
+
+    for (const [wsName, sheetType] of Object.entries(allMatches)) {
+      const { uploadedHeaders, dataRows } = extractSheetData(workbook, wsName);
+      const expectedHeaders = SHEET_TYPES[sheetType].expectedHeaders;
+      const { mapping, matched, needsMapping } = autoMatchHeaders(uploadedHeaders, expectedHeaders);
+
+      session.sheets.push({
+        sheetType,
+        originalName: wsName,
+        headers: uploadedHeaders,
+        headerMapping: mapping,
+        data: dataRows,
+        uploadedAt: new Date()
+      });
+
+      const sheetInfo = {
+        sheetType,
+        label: SHEET_TYPES[sheetType].label,
+        worksheetName: wsName,
+        rowCount: dataRows.length,
+        headerCount: uploadedHeaders.length,
+        uploadedHeaders,
+        autoMatched: matched,
+        needsMapping,
+        mapping
+      };
+      matchedSheets.push(sheetInfo);
+
+      if (needsMapping.length > 0) {
+        sheetsNeedingHeaderMapping.push(sheetType);
+      }
+    }
+
+    // Collect unmatched worksheets
+    for (const wsName of worksheetNames) {
+      if (!allMatches[wsName]) {
+        const { uploadedHeaders, dataRows } = extractSheetData(workbook, wsName);
+        unmatchedWorksheets.push({
+          worksheetName: wsName,
+          headerCount: uploadedHeaders.length,
+          rowCount: dataRows.length,
+          sampleHeaders: uploadedHeaders.slice(0, 5)
+        });
+      }
+    }
+
+    const missingSheetTypes = SHEET_ORDER
+      .filter(t => !matchedTypes.has(t))
+      .map(t => ({ sheetType: t, label: SHEET_TYPES[t].label }));
+
+    // Store file path for potential re-reading during mapWorksheets
+    session.uploadedFilePath = filePath;
     await session.save();
 
     res.json({
-      sheetType,
-      uploadedHeaders,
-      expectedHeaders,
-      autoMatched: matched,
-      needsMapping,
-      mapping,
-      rowCount: dataRows.length
+      matchedSheets,
+      missingSheetTypes,
+      unmatchedWorksheets,
+      allMatched: missingSheetTypes.length === 0,
+      sheetsNeedingHeaderMapping
     });
   } catch (error) {
     if (req.file && req.file.path) {
@@ -106,55 +173,82 @@ exports.uploadSheet = async (req, res, next) => {
   }
 };
 
-exports.pasteSheet = async (req, res, next) => {
+exports.mapWorksheets = async (req, res, next) => {
   try {
-    const { id: sessionId, sheetType } = req.params;
+    const { id: sessionId } = req.params;
+    const { worksheetMappings } = req.body;
 
-    if (!SHEET_TYPES[sheetType]) {
-      return res.status(400).json({ error: `Invalid sheet type: ${sheetType}` });
+    if (!worksheetMappings || typeof worksheetMappings !== 'object') {
+      return res.status(400).json({ error: 'Invalid worksheetMappings object' });
     }
-
-    const { rows } = req.body;
-    if (!rows || !Array.isArray(rows) || rows.length < 1) {
-      return res.status(400).json({ error: 'No data provided. Send { rows: [[...], ...] }' });
-    }
-
-    const headerRow = rows[0];
-    const uploadedHeaders = headerRow
-      .map((h) => (h != null && String(h).trim() !== '' ? String(h).trim() : null))
-      .filter((h) => h !== null);
-
-    const dataRows = rows.slice(1).filter((row) =>
-      row.some((cell) => cell != null && String(cell).trim() !== '')
-    );
-
-    const expectedHeaders = SHEET_TYPES[sheetType].expectedHeaders;
-    const { mapping, matched, needsMapping } = autoMatchHeaders(uploadedHeaders, expectedHeaders);
 
     const session = await Session.findOne({ sessionId });
     if (!session) {
       return res.status(404).json({ error: 'Session not found' });
     }
 
-    session.sheets = session.sheets.filter((s) => s.sheetType !== sheetType);
-    session.sheets.push({
-      sheetType,
-      originalName: 'pasted-data',
-      headers: uploadedHeaders,
-      headerMapping: mapping,
-      data: dataRows,
-      uploadedAt: new Date()
-    });
+    if (!session.uploadedFilePath || !fs.existsSync(session.uploadedFilePath)) {
+      return res.status(400).json({ error: 'Uploaded workbook file not found. Please re-upload.' });
+    }
+
+    const workbook = XLSX.readFile(session.uploadedFilePath);
+    const newlyMatched = [];
+    const sheetsNeedingHeaderMapping = [];
+
+    for (const [wsName, sheetType] of Object.entries(worksheetMappings)) {
+      if (!SHEET_TYPES[sheetType]) {
+        return res.status(400).json({ error: `Invalid sheet type: ${sheetType}` });
+      }
+      if (!workbook.SheetNames.includes(wsName)) {
+        return res.status(400).json({ error: `Worksheet "${wsName}" not found in workbook` });
+      }
+
+      const { uploadedHeaders, dataRows } = extractSheetData(workbook, wsName);
+      const expectedHeaders = SHEET_TYPES[sheetType].expectedHeaders;
+      const { mapping, matched, needsMapping } = autoMatchHeaders(uploadedHeaders, expectedHeaders);
+
+      // Remove existing sheet of same type
+      session.sheets = session.sheets.filter(s => s.sheetType !== sheetType);
+      session.sheets.push({
+        sheetType,
+        originalName: wsName,
+        headers: uploadedHeaders,
+        headerMapping: mapping,
+        data: dataRows,
+        uploadedAt: new Date()
+      });
+
+      const sheetInfo = {
+        sheetType,
+        label: SHEET_TYPES[sheetType].label,
+        worksheetName: wsName,
+        rowCount: dataRows.length,
+        headerCount: uploadedHeaders.length,
+        uploadedHeaders,
+        autoMatched: matched,
+        needsMapping,
+        mapping
+      };
+      newlyMatched.push(sheetInfo);
+
+      if (needsMapping.length > 0) {
+        sheetsNeedingHeaderMapping.push(sheetType);
+      }
+    }
+
     await session.save();
 
+    // Build full summary
+    const matchedTypes = new Set(session.sheets.map(s => s.sheetType));
+    const missingSheetTypes = SHEET_ORDER
+      .filter(t => !matchedTypes.has(t))
+      .map(t => ({ sheetType: t, label: SHEET_TYPES[t].label }));
+
     res.json({
-      sheetType,
-      uploadedHeaders,
-      expectedHeaders,
-      autoMatched: matched,
-      needsMapping,
-      mapping,
-      rowCount: dataRows.length
+      newlyMatched,
+      missingSheetTypes,
+      allMatched: missingSheetTypes.length === 0,
+      sheetsNeedingHeaderMapping
     });
   } catch (error) {
     next(error);
@@ -271,6 +365,15 @@ exports.generateOutput = async (req, res, next) => {
 
     session.output = outputRows;
     session.outputHeaders = outputHeaders;
+
+    // Clean up uploaded workbook file
+    if (session.uploadedFilePath) {
+      fs.unlink(session.uploadedFilePath, (err) => {
+        if (err) console.error('Failed to delete uploaded workbook:', err);
+      });
+      session.uploadedFilePath = null;
+    }
+
     await session.save();
 
     res.json({

@@ -88,4 +88,60 @@ const SHEET_ORDER = [
   'terrHierarchy', 'employeeAssignment', 'employee', 'eligibility', 'mboInput'
 ];
 
-module.exports = { SHEET_TYPES, SHEET_ORDER };
+// Aliases for worksheet name matching (checked in SHEET_ORDER so employeeAssignment before employee)
+const SHEET_NAME_ALIASES = {
+  payCurves: ['pay curves', 'paycurves', 'pay curve', 'payout curves'],
+  planMaster: ['plan master', 'planmaster', 'plan_master'],
+  processedSales: ['processed sales', 'processedsales', 'processed_sales', 'sales'],
+  processedGoals: ['processed goals', 'processedgoals', 'processed_goals', 'goals'],
+  terrHierarchy: ['territory hierarchy', 'terrhierarchy', 'terr hierarchy', 'terr_hierarchy', 'territory_hierarchy'],
+  employeeAssignment: ['employee assignment', 'employeeassignment', 'emp assignment', 'employee_assignment'],
+  employee: ['employee', 'employees', 'emp'],
+  eligibility: ['eligibility', 'eligible'],
+  mboInput: ['mbo input', 'mboinput', 'mbo_input', 'mbo']
+};
+
+/**
+ * Match a worksheet name to a sheet type by checking keys, labels, and aliases.
+ * Returns sheetType string or null.
+ */
+function matchWorksheetToSheetType(name) {
+  const normalized = name.toLowerCase().trim();
+  // Check in SHEET_ORDER to ensure employeeAssignment is checked before employee
+  for (const type of SHEET_ORDER) {
+    // Check exact key match
+    if (normalized === type.toLowerCase()) return type;
+    // Check label match
+    if (normalized === SHEET_TYPES[type].label.toLowerCase()) return type;
+    // Check aliases
+    const aliases = SHEET_NAME_ALIASES[type] || [];
+    if (aliases.some(a => normalized === a)) return type;
+  }
+  return null;
+}
+
+/**
+ * Score each unmatched type by header overlap with worksheet headers.
+ * Returns best match if >= 50% of expected headers match.
+ */
+function matchByHeaders(worksheetHeaders, unmatchedTypes) {
+  const normalizedWsHeaders = worksheetHeaders.map(h => h.toLowerCase().trim());
+  let bestType = null;
+  let bestScore = 0;
+
+  for (const type of unmatchedTypes) {
+    const expected = SHEET_TYPES[type].expectedHeaders;
+    const matchCount = expected.filter(eh =>
+      normalizedWsHeaders.includes(eh.toLowerCase().trim())
+    ).length;
+    const score = matchCount / expected.length;
+    if (score >= 0.5 && score > bestScore) {
+      bestScore = score;
+      bestType = type;
+    }
+  }
+
+  return bestType;
+}
+
+module.exports = { SHEET_TYPES, SHEET_ORDER, SHEET_NAME_ALIASES, matchWorksheetToSheetType, matchByHeaders };

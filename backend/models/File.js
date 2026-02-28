@@ -14,6 +14,7 @@ const sessionSchema = new mongoose.Schema({
   sheets: [sheetSchema],
   output: { type: [[mongoose.Schema.Types.Mixed]], default: null },
   outputHeaders: { type: [String], default: null },
+  uploadedFilePath: { type: String, default: null },
   createdAt: { type: Date, default: Date.now }
 });
 

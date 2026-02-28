@@ -35,18 +35,18 @@ const fileFilter = (req, file, cb) => {
 const upload = multer({
   storage,
   fileFilter,
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
 });
 
 // Session endpoints
 router.post('/session', excelController.createSession);
 router.get('/session/:id/status', excelController.getSessionStatus);
 
-// Per-sheet upload (file)
-router.post('/session/:id/upload/:sheetType', upload.single('file'), excelController.uploadSheet);
+// Single workbook upload
+router.post('/session/:id/upload-workbook', upload.single('file'), excelController.uploadWorkbook);
 
-// Per-sheet paste (JSON)
-router.post('/session/:id/paste/:sheetType', excelController.pasteSheet);
+// Manual worksheet-to-sheetType mapping
+router.post('/session/:id/map-worksheets', excelController.mapWorksheets);
 
 // Header mapping
 router.put('/session/:id/mapping/:sheetType', excelController.saveMapping);
