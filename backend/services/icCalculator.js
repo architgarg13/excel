@@ -2,51 +2,65 @@
  * IC Output - HUB Calculator
  *
  * Computes Incentive Compensation payout calculations for pharma sales teams.
- * Takes 9 input sheets and produces the IC Output - HUB rows.
+ * Takes 9 input sheets (with raw PayCurves data) and produces IC Output - HUB rows.
  */
 
+const VALID_PLAN_TYPES = ['Goal Attainment', 'MBO', 'Average of Underlying Terrs'];
+
 const OUTPUT_HEADERS = [
-  'CountryCode', 'TeamId', 'TeamName', 'BUId', 'BUDescription',
-  'LevelName', 'EmployeeId', 'EmployeeName', 'WorkUnitId', 'WorkUnitName',
-  'Brand', 'ComponentName', 'ComponentWeight', 'PlanType', 'PlanPeriod',
-  'PayoutCurve', 'AnnualTargetPay', 'DrawMultiplier', 'TargetPay',
-  'Sales', 'Goals', 'Attainment', 'PercentToTarget',
-  'PreEligibilityEarnings', 'ICEligibility', 'Payout'
+  'CountryCode', 'TeamId', 'BUId', 'Level', 'Role',
+  'ProductId', 'ChannelId', 'DataType', 'PlanType',
+  'EmployeeId', 'WorkUnitId', 'DataPeriod', 'LevelOfMeasurement',
+  'Sales', 'Goals', 'Attainment',
+  'Draw Multiplier', 'Percent To Target', 'Component Weight', 'Target Pay',
+  'New Hire Eligibilty', 'Performance Eligibility', 'IC Eligibility',
+  'Pre Eligibilty Earnings', 'Previous Cycle Payout', 'Payout',
+  'Key for ZFIR'
 ];
 
 /**
- * Parse pay curves data into a lookup structure.
- * The pay curves sheet has Achievement and Calculated pay-out columns,
- * possibly grouped by curve type (Narrow/Mid/Wide/Boolean).
+ * Parse 4 pay curve types from the raw PayCurves sheet data.
+ * Columns layout: Narrow(0,1), Mid(3,4), Wide(6,7), Boolean(9,10).
  */
-function buildPayCurvesLookup(payCurvesData) {
-  const curves = [];
-  for (const row of payCurvesData) {
-    const achievement = parseFloat(row['Achievement']);
-    const payout = parseFloat(row['Calculated pay-out']);
-    if (!isNaN(achievement) && !isNaN(payout)) {
-      curves.push({ achievement, payout });
+function buildPayCurvesLookup(payCurvesRaw) {
+  const curveConfigs = [
+    { name: 'Narrow', achCol: 0, payCol: 1 },
+    { name: 'Mid', achCol: 3, payCol: 4 },
+    { name: 'Wide', achCol: 6, payCol: 7 },
+    { name: 'Boolean', achCol: 9, payCol: 10 }
+  ];
+
+  const curves = {};
+  for (const cfg of curveConfigs) {
+    const points = [];
+    for (const row of payCurvesRaw) {
+      if (!Array.isArray(row)) continue;
+      const ach = parseFloat(row[cfg.achCol]);
+      const pay = parseFloat(row[cfg.payCol]);
+      if (!isNaN(ach) && !isNaN(pay)) {
+        points.push({ achievement: ach, payout: pay });
+      }
     }
+    points.sort((a, b) => a.achievement - b.achievement);
+    curves[cfg.name] = points;
   }
-  // Sort by achievement ascending for interpolation
-  curves.sort((a, b) => a.achievement - b.achievement);
   return curves;
 }
 
 /**
- * Look up percent-to-target from pay curves using linear interpolation.
+ * Look up percent-to-target from pay curve points using linear interpolation.
  */
-function lookupPercentToTarget(curves, attainment) {
-  if (!curves.length) return 0;
-  if (attainment <= curves[0].achievement) return curves[0].payout;
-  if (attainment >= curves[curves.length - 1].achievement) return curves[curves.length - 1].payout;
+function lookupPercentToTarget(curvePoints, attainment) {
+  if (!curvePoints || !curvePoints.length) return 0;
+  if (attainment <= curvePoints[0].achievement) return curvePoints[0].payout;
+  if (attainment >= curvePoints[curvePoints.length - 1].achievement) return curvePoints[curvePoints.length - 1].payout;
 
-  for (let i = 0; i < curves.length - 1; i++) {
-    if (attainment >= curves[i].achievement && attainment <= curves[i + 1].achievement) {
-      const range = curves[i + 1].achievement - curves[i].achievement;
-      if (range === 0) return curves[i].payout;
-      const ratio = (attainment - curves[i].achievement) / range;
-      return curves[i].payout + ratio * (curves[i + 1].payout - curves[i].payout);
+  for (let i = 0; i < curvePoints.length - 1; i++) {
+    if (attainment >= curvePoints[i].achievement && attainment <= curvePoints[i + 1].achievement) {
+      const range = curvePoints[i + 1].achievement - curvePoints[i].achievement;
+      if (range === 0) return curvePoints[i].payout;
+      const ratio = (attainment - curvePoints[i].achievement) / range;
+      return curvePoints[i].payout + ratio * (curvePoints[i + 1].payout - curvePoints[i].payout);
     }
   }
   return 0;
@@ -63,7 +77,7 @@ function makeKey(...parts) {
  * Round a value to specified decimal places.
  */
 function roundTo(value, decimals) {
-  if (isNaN(value) || decimals == null) return value;
+  if (typeof value !== 'number' || isNaN(value) || decimals == null) return value;
   const d = parseInt(decimals);
   if (isNaN(d)) return value;
   const factor = Math.pow(10, d);
@@ -71,125 +85,167 @@ function roundTo(value, decimals) {
 }
 
 /**
+ * Get trimmed string value from a row object.
+ */
+function str(row, field) {
+  const val = row[field];
+  return val != null ? String(val).trim() : '';
+}
+
+/**
+ * Walk up the territory hierarchy to find the WorkUnitId at a given level.
+ * Returns the original wuId if its level already matches.
+ */
+function findWUAtLevel(wuId, targetLevel, terrMap) {
+  if (!targetLevel) return wuId;
+  const targetLower = targetLevel.toLowerCase();
+
+  // Check if current WU is already at the target level
+  const terr = terrMap[wuId];
+  if (terr && terr.levelName.toLowerCase() === targetLower) return wuId;
+
+  // Walk up the parent chain
+  let current = wuId;
+  const visited = new Set();
+  while (current && !visited.has(current)) {
+    visited.add(current);
+    const t = terrMap[current];
+    if (!t) break;
+    if (t.levelName.toLowerCase() === targetLower) return current;
+    current = t.parentId;
+  }
+  return wuId; // fallback to original
+}
+
+/**
  * Main IC calculation function.
  */
 function calculateIC(sheetData) {
   const {
-    payCurves: payCurvesData,
-    planMaster: planMasterData,
-    processedSales: salesData,
-    processedGoals: goalsData,
-    terrHierarchy: terrData,
-    employeeAssignment: empAssignData,
-    employee: employeeData,
-    eligibility: eligibilityData,
-    mboInput: mboData
+    payCurvesRaw = [],
+    planMaster: planMasterData = [],
+    processedSales: salesData = [],
+    processedGoals: goalsData = [],
+    terrHierarchy: terrData = [],
+    employeeAssignment: empAssignData = [],
+    eligibility: eligibilityData = [],
+    mboInput: mboData = []
   } = sheetData;
 
-  // Build pay curves lookup
-  const payCurves = buildPayCurvesLookup(payCurvesData);
+  // Build pay curves lookup (4 separate curve types)
+  const curves = buildPayCurvesLookup(payCurvesRaw);
 
   // Build territory lookup: WorkUnitId -> territory info
   const terrMap = {};
   const childTerrMap = {}; // parentId -> [childWorkUnitIds]
   for (const row of terrData) {
-    const wuId = String(row['WorkUnitId'] || '').trim();
+    const wuId = str(row, 'WorkUnitId');
+    if (!wuId) continue;
     terrMap[wuId] = {
-      workUnitName: row['WorkUnitName'] || '',
-      parentId: String(row['WorkUnitParentId'] || '').trim(),
-      levelName: String(row['LevelName'] || '').trim(),
-      roleName: String(row['RoleName'] || '').trim(),
-      teamId: String(row['TeamId'] || '').trim(),
-      countryCode: String(row['Country Code'] || '').trim()
+      workUnitName: str(row, 'WorkUnitName'),
+      parentId: str(row, 'WorkUnitParentId'),
+      levelName: str(row, 'LevelName'),
+      roleName: str(row, 'RoleName'),
+      teamId: str(row, 'TeamId'),
+      countryCode: str(row, 'Country Code')
     };
 
-    const parentId = String(row['WorkUnitParentId'] || '').trim();
+    const parentId = str(row, 'WorkUnitParentId');
     if (parentId) {
       if (!childTerrMap[parentId]) childTerrMap[parentId] = [];
       childTerrMap[parentId].push(wuId);
     }
   }
 
-  // Build employee lookup: EmployeeId -> employee info
-  const empMap = {};
-  for (const row of employeeData) {
-    const empId = String(row['EmployeeId'] || '').trim();
-    empMap[empId] = {
-      employeeName: row['EmployeeName'] || '',
-      countryCode: String(row['CountryCode'] || '').trim()
-    };
-  }
-
-  // Build employee assignment lookup: EmployeeId -> [assignments]
-  const empAssignMap = {};
+  // Build WorkUnit -> [EmployeeId] mapping from employee assignments
+  const wuToEmployees = {};
   for (const row of empAssignData) {
-    const empId = String(row['EmployeeId'] || '').trim();
-    if (!empAssignMap[empId]) empAssignMap[empId] = [];
-    empAssignMap[empId].push({
-      workUnitId: String(row['WorkUnitId'] || '').trim(),
-      effort: parseFloat(row['Effort']) || 1,
-      role: String(row['EmployeeRole'] || '').trim()
-    });
+    const empId = str(row, 'EmployeeId');
+    const wuId = str(row, 'WorkUnitId');
+    if (!empId || !wuId) continue;
+    if (!wuToEmployees[wuId]) wuToEmployees[wuId] = [];
+    if (!wuToEmployees[wuId].includes(empId)) {
+      wuToEmployees[wuId].push(empId);
+    }
   }
 
-  // Build sales lookup: key(teamId, buId, workunit, brand) -> Period Sales
+  // Build sales lookup: key(teamId, buId, workunit, brand) -> Period Sales value
   const salesMap = {};
   for (const row of salesData) {
     const key = makeKey(row['TeamId'], row['BUId'], row['Workunit'], row['Brand']);
-    salesMap[key] = parseFloat(row['Period Sales']) || 0;
+    const val = parseFloat(row['Period Sales']);
+    if (!isNaN(val)) salesMap[key] = val;
   }
 
-  // Build goals lookup: key(teamId, buId, workunit, brand) -> Period Goals
+  // Build goals lookup: key(teamId, buId, workunit, brand) -> Period Goals value
   const goalsMap = {};
   for (const row of goalsData) {
     const key = makeKey(row['TeamId'], row['BUId'], row['Workunit'], row['Brand']);
-    goalsMap[key] = parseFloat(row['Period Goals']) || 0;
+    const val = parseFloat(row['Period Goals']);
+    if (!isNaN(val)) goalsMap[key] = val;
   }
 
-  // Build eligibility lookup: key(employeeId, workUnitId) -> eligibility factor
-  const eligMap = {};
+  // Build eligibility lookups: separate NH and Performance
+  const eligNHMap = {};  // key(empId, wuId) -> Protection Eligibility (New Hire)
+  const eligPerfMap = {}; // key(empId, wuId) -> Non Protection Eligibility (Performance)
   for (const row of eligibilityData) {
-    const empId = String(row['EmployeeId'] || '').trim();
-    const wuId = String(row['WorkUnitId'] || '').trim();
+    const empId = str(row, 'EmployeeId');
+    const wuId = str(row, 'WorkUnitId');
+    if (!empId || !wuId) continue;
+    const key = makeKey(empId, wuId);
     const protection = parseFloat(row['Protection Eligibility']);
     const nonProtection = parseFloat(row['Non Protection Eligibility']);
-    // Use non-protection eligibility as the IC eligibility factor
-    const elig = !isNaN(nonProtection) ? nonProtection : (!isNaN(protection) ? protection : 1);
-    eligMap[makeKey(empId, wuId)] = elig;
+    eligNHMap[key] = !isNaN(protection) ? protection : 0;
+    eligPerfMap[key] = !isNaN(nonProtection) ? nonProtection : 1;
   }
 
   // Build MBO lookup: key(employeeId, workUnitId) -> MBOScore
   const mboMap = {};
   for (const row of mboData) {
-    const empId = String(row['Employee Id'] || '').trim();
-    const wuId = String(row['WorkUnitId'] || '').trim();
+    const empId = str(row, 'Employee Id');
+    const wuId = str(row, 'WorkUnitId');
     const score = parseFloat(row['MBOScore']);
-    if (!isNaN(score)) {
+    if (empId && wuId && !isNaN(score)) {
       mboMap[makeKey(empId, wuId)] = score;
     }
   }
 
+  // Filter Plan Master to valid plan types only
+  const validPlans = planMasterData.filter((p) => {
+    const pt = str(p, 'Plan Type');
+    return VALID_PLAN_TYPES.includes(pt);
+  });
+
+  const nonManagerPlans = validPlans.filter((p) => str(p, 'Plan Type') !== 'Average of Underlying Terrs');
+  const managerPlans = validPlans.filter((p) => str(p, 'Plan Type') === 'Average of Underlying Terrs');
+
   const outputRows = [];
 
-  // For each plan master row, generate output rows for matching employees
-  for (const plan of planMasterData) {
-    const teamId = String(plan['TeamId'] || '').trim();
-    const buId = String(plan['BUId'] || '').trim();
-    const teamName = String(plan['TeamName'] || '').trim();
-    const buDesc = String(plan['BUDescription'] || '').trim();
-    const levelName = String(plan['Level Name'] || '').trim();
-    const brand = String(plan['Brand'] || '').trim();
-    const componentName = String(plan['Component Name'] || '').trim();
+  // Phase 1: Process non-manager Plan Master rows (Goal Attainment, MBO)
+  for (const plan of nonManagerPlans) {
+    const teamId = str(plan, 'TeamId');
+    const buId = str(plan, 'BUId');
+    const levelName = str(plan, 'Level Name');
+    const brand = str(plan, 'Brand');
+    const channel = str(plan, 'Channel');
+    const dataType = str(plan, 'Data Type');
+    const planType = str(plan, 'Plan Type');
+    const planPeriod = str(plan, 'Plan Period');
+    const payoutCurve = str(plan, 'Payout Curve');
     const componentWeight = parseFloat(plan['Component Weight']) || 0;
-    const planType = String(plan['Plan Type'] || '').trim();
-    const planPeriod = String(plan['Plan Period'] || '').trim();
-    const payoutCurve = String(plan['Payout Curve'] || '').trim();
-    const annualTargetPay = parseFloat(plan['Annual Target Pay']) || 0;
-    const drawMultiplier = parseFloat(plan['Draw Multiplier']) || 1;
-    const attainmentRounding = plan['Attainment_Rounding Value'];
-    const pctPayoutRounding = plan['PercentagePayout_Rounding Value'];
-    const payoutRounding = plan['Payout_Rounding Value'];
-    const countryCode = String(plan['Country Code'] || '').trim();
+    const lom = str(plan, 'Level of Metric Measurement');
+    const atp = parseFloat(plan['Annual Target Pay']) || 0;
+    const dm = parseFloat(plan['Draw Multiplier']) || 0;
+    const attRounding = plan['Attainment_Rounding Value'];
+    const pctRounding = plan['PercentagePayout_Rounding Value'];
+    const payRounding = plan['Payout_Rounding Value'];
+    const countryCode = str(plan, 'Country Code');
+
+    // Target Pay = ATP * DM * CW, rounded to payRounding dp
+    const targetPay = roundTo(atp * dm * componentWeight, payRounding);
+
+    const isGA = planType === 'Goal Attainment';
+    const isMBO = planType === 'MBO';
 
     // Find territories matching this team + level
     const matchingTerrs = Object.entries(terrMap).filter(([, t]) =>
@@ -197,136 +253,154 @@ function calculateIC(sheetData) {
       t.levelName.toLowerCase() === levelName.toLowerCase()
     );
 
-    // Find employees assigned to matching territories
     for (const [wuId, terr] of matchingTerrs) {
-      // Find employees assigned to this work unit
-      const assignedEmployees = Object.entries(empAssignMap).filter(([, assignments]) =>
-        assignments.some((a) => a.workUnitId === wuId)
-      );
+      const employees = wuToEmployees[wuId] || [];
 
-      for (const [empId, assignments] of assignedEmployees) {
-        const assignment = assignments.find((a) => a.workUnitId === wuId);
-        const emp = empMap[empId] || { employeeName: '', countryCode: '' };
+      for (const empId of employees) {
+        let sales = '';
+        let goals = '';
+        let attainment = '';
+        let percentToTarget = '';
+        let preEligEarnings = 0;
 
-        // Calculate TargetPay
-        const targetPay = annualTargetPay * drawMultiplier * componentWeight;
+        if (isGA) {
+          // Find the WU at the LOM level for sales/goals lookup
+          const salesWU = findWUAtLevel(wuId, lom, terrMap);
+          const salesKey = makeKey(teamId, buId, salesWU, brand);
+          const rawSales = salesMap[salesKey];
+          const rawGoals = goalsMap[salesKey];
 
-        // Look up Sales and Goals
-        const salesKey = makeKey(teamId, buId, wuId, brand);
-        const sales = salesMap[salesKey] || 0;
-        const goals = goalsMap[salesKey] || 0;
+          sales = rawSales != null ? rawSales : '';
+          goals = rawGoals != null ? rawGoals : '';
 
-        // Calculate Attainment
-        let attainment = 0;
-        const isMBO = planType.toLowerCase().includes('mbo');
-        if (isMBO) {
-          attainment = mboMap[makeKey(empId, wuId)] || 0;
-        } else {
-          attainment = goals !== 0 ? sales / goals : 0;
+          if (typeof sales === 'number' && typeof goals === 'number' && goals !== 0) {
+            attainment = roundTo(sales / goals, attRounding);
+          } else {
+            attainment = '';
+          }
+
+          // Look up percent-to-target from the appropriate pay curve
+          const curvePoints = curves[payoutCurve];
+          if (typeof attainment === 'number' && curvePoints && curvePoints.length) {
+            percentToTarget = roundTo(lookupPercentToTarget(curvePoints, attainment), pctRounding);
+            preEligEarnings = targetPay * percentToTarget;
+          }
+        } else if (isMBO) {
+          const mboKey = makeKey(empId, wuId);
+          const mboScore = mboMap[mboKey];
+          attainment = mboScore != null ? mboScore : '';
+
+          // Look up from pay curve if a matching curve type exists
+          const curvePoints = curves[payoutCurve];
+          if (curvePoints && curvePoints.length && typeof attainment === 'number') {
+            percentToTarget = roundTo(lookupPercentToTarget(curvePoints, attainment), pctRounding);
+            preEligEarnings = targetPay * percentToTarget;
+          } else if (typeof attainment === 'number') {
+            // No curve (e.g. Scorecard) - use attainment directly
+            percentToTarget = '';
+            preEligEarnings = targetPay * attainment;
+          }
         }
-        attainment = roundTo(attainment, attainmentRounding);
 
-        // Look up PercentToTarget from pay curves
-        let percentToTarget = lookupPercentToTarget(payCurves, attainment);
-        percentToTarget = roundTo(percentToTarget, pctPayoutRounding);
+        // Eligibility
+        const eligKey = makeKey(empId, wuId);
+        const nhElig = eligNHMap[eligKey] != null ? eligNHMap[eligKey] : 0;
+        const perfElig = eligPerfMap[eligKey] != null ? eligPerfMap[eligKey] : 1;
+        const icElig = perfElig;
 
-        // Calculate PreEligibilityEarnings
-        const preEligEarnings = targetPay * percentToTarget;
+        // Payout
+        const payout = preEligEarnings * icElig;
 
-        // Look up IC Eligibility
-        const icEligibility = eligMap[makeKey(empId, wuId)] != null
-          ? eligMap[makeKey(empId, wuId)]
-          : 1;
-
-        // Calculate Payout
-        let payout = preEligEarnings * icEligibility;
-        payout = roundTo(payout, payoutRounding);
+        // Key for ZFIR
+        const salesStr = (sales !== '' && sales != null) ? String(sales) : '';
+        const attStr = (attainment !== '' && attainment != null) ? String(attainment) : '';
+        const keyForZFIR = salesStr + lom + planType + planPeriod + attStr;
 
         outputRows.push([
-          countryCode, teamId, teamName, buId, buDesc,
-          levelName, empId, emp.employeeName, wuId, terr.workUnitName,
-          brand, componentName, componentWeight, planType, planPeriod,
-          payoutCurve, annualTargetPay, drawMultiplier, roundTo(targetPay, 2),
-          sales, goals, attainment, percentToTarget,
-          roundTo(preEligEarnings, 2), icEligibility, payout
+          countryCode, teamId, buId, terr.levelName, terr.roleName,
+          brand, channel, dataType, planType,
+          empId, wuId, planPeriod, lom,
+          sales, goals, attainment,
+          dm, percentToTarget, componentWeight, targetPay,
+          nhElig, perfElig, icElig,
+          preEligEarnings, null, payout,
+          keyForZFIR
         ]);
       }
     }
   }
 
-  // Manager calculation: average of underlying territory pre-eligibility earnings
-  // Find manager-level territories (those that have children)
-  for (const plan of planMasterData) {
-    const teamId = String(plan['TeamId'] || '').trim();
-    const levelName = String(plan['Level Name'] || '').trim();
+  // Phase 2: Process manager rows ("Average of Underlying Terrs")
+  for (const plan of managerPlans) {
+    const teamId = str(plan, 'TeamId');
+    const buId = str(plan, 'BUId');
+    const levelName = str(plan, 'Level Name');
+    const brand = str(plan, 'Brand');
+    const channel = str(plan, 'Channel');
+    const dataType = str(plan, 'Data Type');
+    const planType = str(plan, 'Plan Type');
+    const planPeriod = str(plan, 'Plan Period');
+    const componentWeight = parseFloat(plan['Component Weight']) || 0;
+    const lom = str(plan, 'Level of Metric Measurement');
+    const atp = parseFloat(plan['Annual Target Pay']) || 0;
+    const dm = parseFloat(plan['Draw Multiplier']) || 0;
+    const payRounding = plan['Payout_Rounding Value'];
+    const countryCode = str(plan, 'Country Code');
 
-    // Skip if this is a rep-level plan (only process manager levels)
-    if (!levelName.toLowerCase().includes('manager') && !levelName.toLowerCase().includes('mgr')) {
-      continue;
-    }
+    const targetPay = roundTo(atp * dm * componentWeight, payRounding);
 
-    const managerTerrs = Object.entries(terrMap).filter(([, t]) =>
+    // Find territories at this level for this team
+    const matchingTerrs = Object.entries(terrMap).filter(([, t]) =>
       t.teamId.toLowerCase() === teamId.toLowerCase() &&
       t.levelName.toLowerCase() === levelName.toLowerCase()
     );
 
-    for (const [mgrWuId] of managerTerrs) {
+    for (const [mgrWuId, mgrTerr] of matchingTerrs) {
       const childWuIds = childTerrMap[mgrWuId] || [];
       if (childWuIds.length === 0) continue;
 
-      // Find existing output rows for child territories
-      const childRows = outputRows.filter((row) =>
-        childWuIds.includes(row[8]) && // WorkUnitId column
-        row[10] === String(plan['Brand'] || '').trim() && // Brand
-        row[11] === String(plan['Component Name'] || '').trim() // ComponentName
-      );
+      // Sum PreEligEarnings per child territory, then average
+      const childTerrTotals = [];
+      for (const childWuId of childWuIds) {
+        // Find all output rows for this child territory (all plan types for same team)
+        const childRows = outputRows.filter((row) =>
+          row[10] === childWuId && // WorkUnitId (index 10)
+          row[1] === teamId       // same team
+        );
+        const totalPreElig = childRows.reduce((sum, row) => {
+          const pe = row[23]; // Pre Eligibilty Earnings (index 23)
+          return sum + (typeof pe === 'number' ? pe : 0);
+        }, 0);
+        childTerrTotals.push(totalPreElig);
+      }
 
-      if (childRows.length === 0) continue;
+      const avgPreElig = childTerrTotals.length > 0
+        ? childTerrTotals.reduce((a, b) => a + b, 0) / childTerrTotals.length
+        : 0;
+      const mgrPreElig = avgPreElig * 1.5;
 
-      // Average pre-eligibility earnings of children
-      const avgPreElig = childRows.reduce((sum, r) => sum + (r[23] || 0), 0) / childRows.length;
+      // Find employees assigned to this manager territory
+      const employees = wuToEmployees[mgrWuId] || [];
 
-      // Find manager employees assigned to this territory
-      const mgrAssigned = Object.entries(empAssignMap).filter(([, assignments]) =>
-        assignments.some((a) => a.workUnitId === mgrWuId)
-      );
+      for (const empId of employees) {
+        const eligKey = makeKey(empId, mgrWuId);
+        const nhElig = eligNHMap[eligKey] != null ? eligNHMap[eligKey] : 0;
+        const perfElig = eligPerfMap[eligKey] != null ? eligPerfMap[eligKey] : 1;
+        const icElig = perfElig;
+        const payout = mgrPreElig * icElig;
 
-      for (const [empId] of mgrAssigned) {
-        const emp = empMap[empId] || { employeeName: '' };
-        const terr = terrMap[mgrWuId] || {};
-        const mgrPreElig = avgPreElig * 1.5;
-        const icEligibility = eligMap[makeKey(empId, mgrWuId)] != null
-          ? eligMap[makeKey(empId, mgrWuId)]
-          : 1;
-        const payout = roundTo(mgrPreElig * icEligibility, 2);
+        // Key for ZFIR: no sales/attainment for manager rows
+        const keyForZFIR = lom + planType + planPeriod;
 
         outputRows.push([
-          String(plan['Country Code'] || '').trim(),
-          teamId,
-          String(plan['TeamName'] || '').trim(),
-          String(plan['BUId'] || '').trim(),
-          String(plan['BUDescription'] || '').trim(),
-          levelName,
-          empId,
-          emp.employeeName,
-          mgrWuId,
-          terr.workUnitName || '',
-          String(plan['Brand'] || '').trim(),
-          String(plan['Component Name'] || '').trim(),
-          parseFloat(plan['Component Weight']) || 0,
-          String(plan['Plan Type'] || '').trim(),
-          String(plan['Plan Period'] || '').trim(),
-          String(plan['Payout Curve'] || '').trim(),
-          parseFloat(plan['Annual Target Pay']) || 0,
-          parseFloat(plan['Draw Multiplier']) || 1,
-          0, // TargetPay (manager calc override)
-          0, // Sales
-          0, // Goals
-          0, // Attainment
-          0, // PercentToTarget
-          roundTo(mgrPreElig, 2),
-          icEligibility,
-          payout
+          countryCode, teamId, buId, mgrTerr.levelName, mgrTerr.roleName,
+          brand, channel, dataType, planType,
+          empId, mgrWuId, planPeriod, lom,
+          '', '', '',
+          dm, '', componentWeight, targetPay,
+          nhElig, perfElig, icElig,
+          mgrPreElig, null, payout,
+          keyForZFIR
         ]);
       }
     }

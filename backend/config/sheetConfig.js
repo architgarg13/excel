@@ -1,3 +1,5 @@
+const { isKnownHeader, normalizedIncludes } = require('../services/headerMatcher');
+
 const SHEET_TYPES = {
   payCurves: {
     label: 'Pay Curves',
@@ -133,14 +135,14 @@ function matchWorksheetToSheetType(name) {
  * Returns best match if >= 50% of expected headers match.
  */
 function matchByHeaders(worksheetHeaders, unmatchedTypes) {
-  const normalizedWsHeaders = worksheetHeaders.map(h => h.toLowerCase().trim());
+  const wsHeaders = worksheetHeaders.map(h => h.trim());
   let bestType = null;
   let bestScore = 0;
 
   for (const type of unmatchedTypes) {
     const expected = SHEET_TYPES[type].expectedHeaders;
     const matchCount = expected.filter(eh =>
-      normalizedWsHeaders.includes(eh.toLowerCase().trim())
+      normalizedIncludes(wsHeaders, eh)
     ).length;
     const score = matchCount / expected.length;
     if (score >= 0.5 && score > bestScore) {
@@ -158,11 +160,11 @@ function matchByHeaders(worksheetHeaders, unmatchedTypes) {
  * Returns the row index (defaults to 0 if no row scores > 1 match).
  */
 function findHeaderRow(jsonData) {
-  // Build set of all known headers (lowercased)
-  const knownHeaders = new Set();
+  // Build list of all known expected headers across all sheet types
+  const allExpectedHeaders = [];
   for (const type of Object.values(SHEET_TYPES)) {
     for (const h of type.expectedHeaders) {
-      knownHeaders.add(h.toLowerCase().trim());
+      allExpectedHeaders.push(h);
     }
   }
 
@@ -175,7 +177,7 @@ function findHeaderRow(jsonData) {
     if (!Array.isArray(row)) continue;
     let count = 0;
     for (const cell of row) {
-      if (cell != null && knownHeaders.has(String(cell).toLowerCase().trim())) {
+      if (isKnownHeader(cell, allExpectedHeaders)) {
         count++;
       }
     }

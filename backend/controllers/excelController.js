@@ -5,26 +5,11 @@ const { v4: uuidv4 } = require('uuid');
 const Session = require('../models/File');
 const { SHEET_TYPES, SHEET_ORDER, matchWorksheetToSheetType, matchByHeaders, findHeaderRow } = require('../config/sheetConfig');
 const { calculateIC } = require('../services/icCalculator');
+const { smartAutoMatch } = require('../services/headerMatcher');
 
-// Auto-match uploaded headers to expected headers (case-insensitive)
+// Auto-match uploaded headers to expected headers (smart multi-strategy matching)
 function autoMatchHeaders(uploadedHeaders, expectedHeaders) {
-  const mapping = {};
-  const matched = [];
-  const needsMapping = [];
-
-  for (const expected of expectedHeaders) {
-    const found = uploadedHeaders.find(
-      (h) => h.toLowerCase().trim() === expected.toLowerCase().trim()
-    );
-    if (found) {
-      mapping[expected] = found;
-      matched.push(expected);
-    } else {
-      needsMapping.push(expected);
-    }
-  }
-
-  return { mapping, matched, needsMapping };
+  return smartAutoMatch(uploadedHeaders, expectedHeaders);
 }
 
 // Extract headers and data rows from a worksheet (with smart header row detection)
@@ -360,6 +345,12 @@ exports.generateOutput = async (req, res, next) => {
       });
 
       sheetData[sheet.sheetType] = rows;
+    }
+
+    // Pass raw PayCurves data (arrays) so the calculator can parse 4 curve types
+    const payCurvesSheet = session.sheets.find((s) => s.sheetType === 'payCurves');
+    if (payCurvesSheet) {
+      sheetData.payCurvesRaw = payCurvesSheet.data;
     }
 
     const { headers: outputHeaders, rows: outputRows } = calculateIC(sheetData);
