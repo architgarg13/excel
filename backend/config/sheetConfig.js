@@ -90,14 +90,14 @@ const SHEET_ORDER = [
 
 // Aliases for worksheet name matching (checked in SHEET_ORDER so employeeAssignment before employee)
 const SHEET_NAME_ALIASES = {
-  payCurves: ['pay curves', 'paycurves', 'pay curve', 'payout curves'],
-  planMaster: ['plan master', 'planmaster', 'plan_master'],
-  processedSales: ['processed sales', 'processedsales', 'processed_sales', 'sales'],
-  processedGoals: ['processed goals', 'processedgoals', 'processed_goals', 'goals'],
-  terrHierarchy: ['territory hierarchy', 'terrhierarchy', 'terr hierarchy', 'terr_hierarchy', 'territory_hierarchy'],
-  employeeAssignment: ['employee assignment', 'employeeassignment', 'emp assignment', 'employee_assignment'],
-  employee: ['employee', 'employees', 'emp'],
-  eligibility: ['eligibility', 'eligible'],
+  payCurves: ['pay curves', 'paycurves', 'pay curve', 'payout curves', 'pay curves input'],
+  planMaster: ['plan master', 'planmaster', 'plan_master', 'plan master input'],
+  processedSales: ['processed sales', 'processedsales', 'processed_sales', 'sales', 'processed sales input'],
+  processedGoals: ['processed goals', 'processedgoals', 'processed_goals', 'goals', 'processed goals input'],
+  terrHierarchy: ['territory hierarchy', 'terrhierarchy', 'terr hierarchy', 'terr_hierarchy', 'territory_hierarchy', 'terr hierrachy input', 'terr hierarchy input', 'territory hierarchy input'],
+  employeeAssignment: ['employee assignment', 'employeeassignment', 'emp assignment', 'employee_assignment', 'employee assignment input', 'emp assignment input'],
+  employee: ['employee', 'employees', 'emp', 'employee input'],
+  eligibility: ['eligibility', 'eligible', 'eligibility input'],
   mboInput: ['mbo input', 'mboinput', 'mbo_input', 'mbo']
 };
 
@@ -108,14 +108,22 @@ const SHEET_NAME_ALIASES = {
 function matchWorksheetToSheetType(name) {
   const normalized = name.toLowerCase().trim();
   // Check in SHEET_ORDER to ensure employeeAssignment is checked before employee
+  // Pass 1: exact match against key, label, and aliases
   for (const type of SHEET_ORDER) {
-    // Check exact key match
     if (normalized === type.toLowerCase()) return type;
-    // Check label match
     if (normalized === SHEET_TYPES[type].label.toLowerCase()) return type;
-    // Check aliases
     const aliases = SHEET_NAME_ALIASES[type] || [];
     if (aliases.some(a => normalized === a)) return type;
+  }
+  // Pass 2: partial matching — startsWith in either direction
+  for (const type of SHEET_ORDER) {
+    const aliases = SHEET_NAME_ALIASES[type] || [];
+    const candidates = [type.toLowerCase(), SHEET_TYPES[type].label.toLowerCase(), ...aliases];
+    for (const candidate of candidates) {
+      if (normalized.startsWith(candidate) || candidate.startsWith(normalized)) {
+        return type;
+      }
+    }
   }
   return null;
 }
@@ -144,4 +152,41 @@ function matchByHeaders(worksheetHeaders, unmatchedTypes) {
   return bestType;
 }
 
-module.exports = { SHEET_TYPES, SHEET_ORDER, SHEET_NAME_ALIASES, matchWorksheetToSheetType, matchByHeaders };
+/**
+ * Scan jsonData (array of row arrays) to find the row most likely to be the header.
+ * Compares cell values against all known expected headers across every sheet type.
+ * Returns the row index (defaults to 0 if no row scores > 1 match).
+ */
+function findHeaderRow(jsonData) {
+  // Build set of all known headers (lowercased)
+  const knownHeaders = new Set();
+  for (const type of Object.values(SHEET_TYPES)) {
+    for (const h of type.expectedHeaders) {
+      knownHeaders.add(h.toLowerCase().trim());
+    }
+  }
+
+  let bestIdx = 0;
+  let bestCount = 0;
+  const limit = Math.min(jsonData.length, 20);
+
+  for (let i = 0; i < limit; i++) {
+    const row = jsonData[i];
+    if (!Array.isArray(row)) continue;
+    let count = 0;
+    for (const cell of row) {
+      if (cell != null && knownHeaders.has(String(cell).toLowerCase().trim())) {
+        count++;
+      }
+    }
+    if (count > bestCount) {
+      bestCount = count;
+      bestIdx = i;
+    }
+  }
+
+  // Need at least 2 matches to be confident
+  return bestCount >= 2 ? bestIdx : 0;
+}
+
+module.exports = { SHEET_TYPES, SHEET_ORDER, SHEET_NAME_ALIASES, matchWorksheetToSheetType, matchByHeaders, findHeaderRow };

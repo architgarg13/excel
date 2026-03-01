@@ -3,7 +3,7 @@ const ExcelJS = require('exceljs');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const Session = require('../models/File');
-const { SHEET_TYPES, SHEET_ORDER, matchWorksheetToSheetType, matchByHeaders } = require('../config/sheetConfig');
+const { SHEET_TYPES, SHEET_ORDER, matchWorksheetToSheetType, matchByHeaders, findHeaderRow } = require('../config/sheetConfig');
 const { calculateIC } = require('../services/icCalculator');
 
 // Auto-match uploaded headers to expected headers (case-insensitive)
@@ -27,21 +27,22 @@ function autoMatchHeaders(uploadedHeaders, expectedHeaders) {
   return { mapping, matched, needsMapping };
 }
 
-// Extract headers and data rows from a worksheet
+// Extract headers and data rows from a worksheet (with smart header row detection)
 function extractSheetData(workbook, sheetName) {
   const sheet = workbook.Sheets[sheetName];
   const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
 
-  const headerRow = jsonData[0] || [];
+  const headerRowIdx = findHeaderRow(jsonData);
+  const headerRow = jsonData[headerRowIdx] || [];
   const uploadedHeaders = headerRow
     .map((h) => (h != null && String(h).trim() !== '' ? String(h).trim() : null))
     .filter((h) => h !== null);
 
-  const dataRows = jsonData.slice(1).filter((row) =>
+  const dataRows = jsonData.slice(headerRowIdx + 1).filter((row) =>
     row.some((cell) => cell != null && String(cell).trim() !== '')
   );
 
-  return { uploadedHeaders, dataRows };
+  return { uploadedHeaders, dataRows, headerRowIndex: headerRowIdx };
 }
 
 exports.createSession = async (req, res, next) => {
