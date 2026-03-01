@@ -57,11 +57,11 @@ const SHEET_TYPES = {
   employee: {
     label: 'Employee',
     expectedHeaders: [
-      'CountryCode', 'EmployeeId', 'EmployeeName', 'FirstName',
-      'LastName', 'MiddleName', 'PreferredName', 'Title',
-      'EmployeeStatus', 'EmployeeType', 'HireDate', 'TermDate',
-      'ManagerId', 'ManagerName', 'Email', 'Department',
-      'CostCenter', 'Location', 'Currency'
+      'CountryCode', 'EmployeeId', 'EmployeeName', 'EmployeeLogin',
+      'EmployeeEmail', 'EmployeeTitle', 'EmployeeCategory', 'EmployeeType',
+      'EmployeeStatus', 'FTE Indicator', 'Capacity', 'PayrollID',
+      'JobCode', 'CostCenter', 'CostCenterDescription', 'CompanyCode',
+      'HeadCountFunction', 'EffectiveStartDate', 'EffectiveEndDate'
     ]
   },
   eligibility: {
