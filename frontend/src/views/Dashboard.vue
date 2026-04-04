@@ -82,6 +82,7 @@
         :headers="outputData.headers"
         :rows="outputData.rows"
         @download="handleDownload"
+        @download-audit="handleDownloadAudit"
       />
 
       <div class="mt-6 flex justify-between">
@@ -112,7 +113,8 @@ import {
   createSession,
   saveMapping,
   generateOutput,
-  getDownloadUrl
+  getDownloadUrl,
+  getAuditDownloadUrl
 } from '../services/api.js';
 
 const sessionId = ref(null);
@@ -205,5 +207,10 @@ async function handleGenerate() {
 function handleDownload() {
   if (!sessionId.value) return;
   window.open(getDownloadUrl(sessionId.value), '_blank');
+}
+
+function handleDownloadAudit() {
+  if (!sessionId.value) return;
+  window.open(getAuditDownloadUrl(sessionId.value), '_blank');
 }
 </script>

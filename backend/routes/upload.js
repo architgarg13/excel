@@ -57,4 +57,7 @@ router.post('/session/:id/generate', excelController.generateOutput);
 // Download IC output as .xlsx
 router.get('/session/:id/download', excelController.downloadOutput);
 
+// Download audit trail as .docx
+router.get('/session/:id/download-audit', excelController.downloadAuditDocx);
+
 module.exports = router;

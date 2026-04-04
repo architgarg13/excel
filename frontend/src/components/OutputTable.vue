@@ -5,15 +5,26 @@
         <h3 class="text-lg font-semibold text-gray-800 dark:text-gray-100">IC Output - HUB</h3>
         <p class="text-sm text-gray-500 dark:text-gray-400">{{ rows.length }} rows</p>
       </div>
-      <button
-        @click="$emit('download')"
-        class="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-success rounded-lg hover:bg-green-600 transition-colors"
-      >
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-        </svg>
-        Download .xlsx
-      </button>
+      <div class="flex items-center gap-2">
+        <button
+          @click="$emit('download')"
+          class="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-success rounded-lg hover:bg-green-600 transition-colors"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+          Download .xlsx
+        </button>
+        <button
+          @click="$emit('download-audit')"
+          class="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+          Download Audit Trail (.docx)
+        </button>
+      </div>
     </div>
 
     <div class="overflow-x-auto max-h-[600px] overflow-y-auto">
@@ -75,7 +86,7 @@ const props = defineProps({
   rows: { type: Array, required: true }
 });
 
-defineEmits(['download']);
+defineEmits(['download', 'download-audit']);
 
 const pageSize = 100;
 const page = ref(0);

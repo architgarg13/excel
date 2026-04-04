@@ -49,21 +49,53 @@ function buildPayCurvesLookup(payCurvesRaw) {
 
 /**
  * Look up percent-to-target from pay curve points using linear interpolation.
+ * Returns { value, trace } where trace has interpolation details.
  */
-function lookupPercentToTarget(curvePoints, attainment) {
-  if (!curvePoints || !curvePoints.length) return 0;
-  if (attainment <= curvePoints[0].achievement) return curvePoints[0].payout;
-  if (attainment >= curvePoints[curvePoints.length - 1].achievement) return curvePoints[curvePoints.length - 1].payout;
+function lookupPercentToTargetDetailed(curvePoints, attainment) {
+  const trace = { curvePointCount: curvePoints ? curvePoints.length : 0 };
+
+  if (!curvePoints || !curvePoints.length) {
+    trace.method = 'no curve points';
+    return { value: 0, trace };
+  }
+  if (attainment <= curvePoints[0].achievement) {
+    trace.method = 'below minimum';
+    trace.bound = curvePoints[0];
+    return { value: curvePoints[0].payout, trace };
+  }
+  if (attainment >= curvePoints[curvePoints.length - 1].achievement) {
+    trace.method = 'above maximum';
+    trace.bound = curvePoints[curvePoints.length - 1];
+    return { value: curvePoints[curvePoints.length - 1].payout, trace };
+  }
 
   for (let i = 0; i < curvePoints.length - 1; i++) {
     if (attainment >= curvePoints[i].achievement && attainment <= curvePoints[i + 1].achievement) {
       const range = curvePoints[i + 1].achievement - curvePoints[i].achievement;
-      if (range === 0) return curvePoints[i].payout;
+      if (range === 0) {
+        trace.method = 'zero range';
+        trace.lowerPoint = curvePoints[i];
+        return { value: curvePoints[i].payout, trace };
+      }
       const ratio = (attainment - curvePoints[i].achievement) / range;
-      return curvePoints[i].payout + ratio * (curvePoints[i + 1].payout - curvePoints[i].payout);
+      const value = curvePoints[i].payout + ratio * (curvePoints[i + 1].payout - curvePoints[i].payout);
+      trace.method = 'interpolation';
+      trace.lowerPoint = curvePoints[i];
+      trace.upperPoint = curvePoints[i + 1];
+      trace.ratio = ratio;
+      trace.formula = `${curvePoints[i].payout} + (${attainment} - ${curvePoints[i].achievement}) / (${curvePoints[i + 1].achievement} - ${curvePoints[i].achievement}) * (${curvePoints[i + 1].payout} - ${curvePoints[i].payout})`;
+      return { value, trace };
     }
   }
-  return 0;
+  trace.method = 'fallback';
+  return { value: 0, trace };
+}
+
+/**
+ * Look up percent-to-target from pay curve points using linear interpolation.
+ */
+function lookupPercentToTarget(curvePoints, attainment) {
+  return lookupPercentToTargetDetailed(curvePoints, attainment).value;
 }
 
 /**
@@ -94,27 +126,35 @@ function str(row, field) {
 
 /**
  * Walk up the territory hierarchy to find the WorkUnitId at a given level.
- * Returns the original wuId if its level already matches.
+ * Returns { wuId, path } where path is the chain of WU IDs visited.
  */
-function findWUAtLevel(wuId, targetLevel, terrMap) {
-  if (!targetLevel) return wuId;
+function findWUAtLevelDetailed(wuId, targetLevel, terrMap) {
+  const path = [wuId];
+  if (!targetLevel) return { wuId, path };
   const targetLower = targetLevel.toLowerCase();
 
-  // Check if current WU is already at the target level
   const terr = terrMap[wuId];
-  if (terr && terr.levelName.toLowerCase() === targetLower) return wuId;
+  if (terr && terr.levelName.toLowerCase() === targetLower) return { wuId, path };
 
-  // Walk up the parent chain
   let current = wuId;
   const visited = new Set();
   while (current && !visited.has(current)) {
     visited.add(current);
     const t = terrMap[current];
     if (!t) break;
-    if (t.levelName.toLowerCase() === targetLower) return current;
+    if (t.levelName.toLowerCase() === targetLower) return { wuId: current, path };
     current = t.parentId;
+    if (current) path.push(current);
   }
-  return wuId; // fallback to original
+  return { wuId, path }; // fallback to original
+}
+
+/**
+ * Walk up the territory hierarchy to find the WorkUnitId at a given level.
+ * Returns the original wuId if its level already matches.
+ */
+function findWUAtLevel(wuId, targetLevel, terrMap) {
+  return findWUAtLevelDetailed(wuId, targetLevel, terrMap).wuId;
 }
 
 /**
@@ -220,6 +260,7 @@ function calculateIC(sheetData) {
   const managerPlans = validPlans.filter((p) => str(p, 'Plan Type') === 'Average of Underlying Terrs');
 
   const outputRows = [];
+  const auditTrails = [];
 
   // Phase 1: Process non-manager Plan Master rows (Goal Attainment, MBO)
   for (const plan of nonManagerPlans) {
@@ -263,9 +304,34 @@ function calculateIC(sheetData) {
         let percentToTarget = '';
         let preEligEarnings = 0;
 
+        // Start building audit trace
+        const trace = {
+          rowIndex: outputRows.length,
+          planMaster: {
+            countryCode, teamId, buId, levelName, brand, channel,
+            dataType, planType, planPeriod, payoutCurve,
+            componentWeight, lom, atp, dm,
+            attRounding, pctRounding, payRounding
+          },
+          territory: {
+            wuId,
+            workUnitName: terr.workUnitName,
+            levelName: terr.levelName,
+            roleName: terr.roleName,
+            matchCriteria: `TeamId="${teamId}" AND LevelName="${levelName}"`
+          },
+          employee: { empId },
+          targetPay: {
+            formula: `ATP(${atp}) x DM(${dm}) x CW(${componentWeight}) = ${atp * dm * componentWeight}`,
+            atp, dm, cw: componentWeight,
+            rounding: payRounding,
+            value: targetPay
+          }
+        };
+
         if (isGA) {
           // Find the WU at the LOM level for sales/goals lookup
-          const salesWU = findWUAtLevel(wuId, lom, terrMap);
+          const { wuId: salesWU, path: walkUpPath } = findWUAtLevelDetailed(wuId, lom, terrMap);
           const salesKey = makeKey(teamId, buId, salesWU, brand);
           const rawSales = salesMap[salesKey];
           const rawGoals = goalsMap[salesKey];
@@ -273,33 +339,105 @@ function calculateIC(sheetData) {
           sales = rawSales != null ? rawSales : '';
           goals = rawGoals != null ? rawGoals : '';
 
+          trace.salesGoals = {
+            salesWU,
+            walkUpPath,
+            lookupKey: salesKey,
+            salesFound: rawSales != null,
+            salesValue: rawSales != null ? rawSales : 'NOT FOUND',
+            goalsFound: rawGoals != null,
+            goalsValue: rawGoals != null ? rawGoals : 'NOT FOUND'
+          };
+
           if (typeof sales === 'number' && typeof goals === 'number' && goals !== 0) {
-            attainment = roundTo(sales / goals, attRounding);
+            const rawAttainment = sales / goals;
+            attainment = roundTo(rawAttainment, attRounding);
+            trace.attainment = {
+              formula: `Sales(${sales}) / Goals(${goals}) = ${rawAttainment}`,
+              rawValue: rawAttainment,
+              rounding: attRounding,
+              roundedValue: attainment
+            };
           } else {
             attainment = '';
+            trace.attainment = {
+              formula: 'Cannot calculate - Sales or Goals missing/zero',
+              rawValue: null,
+              rounding: attRounding,
+              roundedValue: ''
+            };
           }
 
           // Look up percent-to-target from the appropriate pay curve
           const curvePoints = curves[payoutCurve];
           if (typeof attainment === 'number' && curvePoints && curvePoints.length) {
-            percentToTarget = roundTo(lookupPercentToTarget(curvePoints, attainment), pctRounding);
+            const detailed = lookupPercentToTargetDetailed(curvePoints, attainment);
+            percentToTarget = roundTo(detailed.value, pctRounding);
             preEligEarnings = targetPay * percentToTarget;
+            trace.payCurve = {
+              curveType: payoutCurve,
+              ...detailed.trace,
+              rawPercentToTarget: detailed.value,
+              rounding: pctRounding,
+              roundedPercentToTarget: percentToTarget
+            };
+          } else {
+            trace.payCurve = {
+              curveType: payoutCurve,
+              method: typeof attainment !== 'number' ? 'skipped - no attainment' : 'no curve points found',
+              rawPercentToTarget: null,
+              roundedPercentToTarget: ''
+            };
           }
         } else if (isMBO) {
           const mboKey = makeKey(empId, wuId);
           const mboScore = mboMap[mboKey];
           attainment = mboScore != null ? mboScore : '';
 
+          trace.mbo = {
+            lookupKey: mboKey,
+            scoreFound: mboScore != null,
+            score: mboScore != null ? mboScore : 'NOT FOUND'
+          };
+
           // Look up from pay curve if a matching curve type exists
           const curvePoints = curves[payoutCurve];
           if (curvePoints && curvePoints.length && typeof attainment === 'number') {
-            percentToTarget = roundTo(lookupPercentToTarget(curvePoints, attainment), pctRounding);
+            const detailed = lookupPercentToTargetDetailed(curvePoints, attainment);
+            percentToTarget = roundTo(detailed.value, pctRounding);
             preEligEarnings = targetPay * percentToTarget;
+            trace.payCurve = {
+              curveType: payoutCurve,
+              ...detailed.trace,
+              rawPercentToTarget: detailed.value,
+              rounding: pctRounding,
+              roundedPercentToTarget: percentToTarget
+            };
           } else if (typeof attainment === 'number') {
             // No curve (e.g. Scorecard) - use attainment directly
             percentToTarget = '';
             preEligEarnings = targetPay * attainment;
+            trace.payCurve = {
+              curveType: payoutCurve,
+              method: 'no curve - using attainment directly as multiplier',
+              rawPercentToTarget: null,
+              roundedPercentToTarget: ''
+            };
+          } else {
+            trace.payCurve = {
+              curveType: payoutCurve,
+              method: 'skipped - no MBO score',
+              rawPercentToTarget: null,
+              roundedPercentToTarget: ''
+            };
           }
+
+          trace.attainment = {
+            formula: isMBO ? `MBO Score = ${attainment}` : '',
+            rawValue: attainment,
+            rounding: null,
+            roundedValue: attainment
+          };
         }
 
         // Eligibility
@@ -308,13 +446,46 @@ function calculateIC(sheetData) {
         const perfElig = eligPerfMap[eligKey] != null ? eligPerfMap[eligKey] : 1;
         const icElig = perfElig;
 
+        trace.eligibility = {
+          lookupKey: eligKey,
+          nhEligFound: eligNHMap[eligKey] != null,
+          nhElig,
+          perfEligFound: eligPerfMap[eligKey] != null,
+          perfElig,
+          icElig,
+          icEligFormula: 'IC Eligibility = Performance Eligibility'
+        };
+
+        // Pre Eligibility Earnings
+        trace.preEligEarnings = {
+          formula: isGA
+            ? `TargetPay(${targetPay}) x PercentToTarget(${percentToTarget}) = ${preEligEarnings}`
+            : (isMBO && percentToTarget !== ''
+              ? `TargetPay(${targetPay}) x PercentToTarget(${percentToTarget}) = ${preEligEarnings}`
+              : `TargetPay(${targetPay}) x Attainment(${attainment}) = ${preEligEarnings}`),
+          value: preEligEarnings
+        };
+
         // Payout
         const payout = preEligEarnings * icElig;
+
+        trace.payout = {
+          formula: `PreEligEarnings(${preEligEarnings}) x ICEligibility(${icElig}) = ${payout}`,
+          preEligEarnings,
+          icElig,
+          value: payout
+        };
 
         // Key for ZFIR
         const salesStr = (sales !== '' && sales != null) ? String(sales) : '';
         const attStr = (attainment !== '' && attainment != null) ? String(attainment) : '';
         const keyForZFIR = salesStr + lom + planType + planPeriod + attStr;
+
+        trace.zfirKey = {
+          components: { sales: salesStr, lom, planType, planPeriod, attainment: attStr },
+          formula: `"${salesStr}" + "${lom}" + "${planType}" + "${planPeriod}" + "${attStr}"`,
+          value: keyForZFIR
+        };
 
         outputRows.push([
           countryCode, teamId, buId, terr.levelName, terr.roleName,
@@ -326,6 +497,7 @@ function calculateIC(sheetData) {
           preEligEarnings, null, payout,
           keyForZFIR
         ]);
+        auditTrails.push(trace);
       }
     }
   }
@@ -361,6 +533,7 @@ function calculateIC(sheetData) {
 
       // Sum PreEligEarnings per child territory, then average
       const childTerrTotals = [];
+      const childBreakdown = [];
       for (const childWuId of childWuIds) {
         // Find all output rows for this child territory (all plan types for same team)
         const childRows = outputRows.filter((row) =>
@@ -372,6 +545,11 @@ function calculateIC(sheetData) {
           return sum + (typeof pe === 'number' ? pe : 0);
         }, 0);
         childTerrTotals.push(totalPreElig);
+        childBreakdown.push({
+          childWuId,
+          matchingRowCount: childRows.length,
+          totalPreElig
+        });
       }
 
       const avgPreElig = childTerrTotals.length > 0
@@ -392,6 +570,65 @@ function calculateIC(sheetData) {
         // Key for ZFIR: no sales/attainment for manager rows
         const keyForZFIR = lom + planType + planPeriod;
 
+        const trace = {
+          rowIndex: outputRows.length,
+          planMaster: {
+            countryCode, teamId, buId, levelName, brand, channel,
+            dataType, planType, planPeriod, payoutCurve: 'N/A (Manager)',
+            componentWeight, lom, atp, dm,
+            attRounding: null, pctRounding: null, payRounding
+          },
+          territory: {
+            wuId: mgrWuId,
+            workUnitName: mgrTerr.workUnitName,
+            levelName: mgrTerr.levelName,
+            roleName: mgrTerr.roleName,
+            matchCriteria: `TeamId="${teamId}" AND LevelName="${levelName}"`
+          },
+          employee: { empId },
+          targetPay: {
+            formula: `ATP(${atp}) x DM(${dm}) x CW(${componentWeight}) = ${atp * dm * componentWeight}`,
+            atp, dm, cw: componentWeight,
+            rounding: payRounding,
+            value: targetPay
+          },
+          managerDetail: {
+            childWuIds,
+            childBreakdown,
+            sumOfChildTotals: childTerrTotals.reduce((a, b) => a + b, 0),
+            childCount: childTerrTotals.length,
+            avgPreElig,
+            avgFormula: `Sum(${childTerrTotals.join(', ')}) / ${childTerrTotals.length} = ${avgPreElig}`,
+            multiplier: 1.5,
+            mgrPreElig,
+            mgrFormula: `AvgPreElig(${avgPreElig}) x 1.5 = ${mgrPreElig}`
+          },
+          eligibility: {
+            lookupKey: eligKey,
+            nhEligFound: eligNHMap[eligKey] != null,
+            nhElig,
+            perfEligFound: eligPerfMap[eligKey] != null,
+            perfElig,
+            icElig,
+            icEligFormula: 'IC Eligibility = Performance Eligibility'
+          },
+          preEligEarnings: {
+            formula: `Manager Pre-Elig = AvgChildPreElig(${avgPreElig}) x 1.5 = ${mgrPreElig}`,
+            value: mgrPreElig
+          },
+          payout: {
+            formula: `MgrPreElig(${mgrPreElig}) x ICEligibility(${icElig}) = ${payout}`,
+            preEligEarnings: mgrPreElig,
+            icElig,
+            value: payout
+          },
+          zfirKey: {
+            components: { lom, planType, planPeriod },
+            formula: `"${lom}" + "${planType}" + "${planPeriod}"`,
+            value: keyForZFIR
+          }
+        };
+
         outputRows.push([
           countryCode, teamId, buId, mgrTerr.levelName, mgrTerr.roleName,
           brand, channel, dataType, planType,
@@ -402,11 +639,12 @@ function calculateIC(sheetData) {
           mgrPreElig, null, payout,
           keyForZFIR
         ]);
+        auditTrails.push(trace);
       }
     }
   }
 
-  return { headers: OUTPUT_HEADERS, rows: outputRows };
+  return { headers: OUTPUT_HEADERS, rows: outputRows, auditTrails };
 }
 
 module.exports = { calculateIC };

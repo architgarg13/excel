@@ -6,6 +6,7 @@ const Session = require('../models/File');
 const { SHEET_TYPES, SHEET_ORDER, matchWorksheetToSheetType, matchByHeaders, findHeaderRow } = require('../config/sheetConfig');
 const { calculateIC } = require('../services/icCalculator');
 const { smartAutoMatch } = require('../services/headerMatcher');
+const { generateFullAuditDocx } = require('../services/docxGenerator');
 
 // Auto-match uploaded headers to expected headers (smart multi-strategy matching)
 function autoMatchHeaders(uploadedHeaders, expectedHeaders) {
@@ -353,10 +354,11 @@ exports.generateOutput = async (req, res, next) => {
       sheetData.payCurvesRaw = payCurvesSheet.data;
     }
 
-    const { headers: outputHeaders, rows: outputRows } = calculateIC(sheetData);
+    const { headers: outputHeaders, rows: outputRows, auditTrails } = calculateIC(sheetData);
 
     session.output = outputRows;
     session.outputHeaders = outputHeaders;
+    session.auditTrails = auditTrails;
 
     // Clean up uploaded workbook file
     if (session.uploadedFilePath) {
@@ -425,6 +427,29 @@ exports.downloadOutput = async (req, res, next) => {
 
     await workbook.xlsx.write(res);
     res.end();
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.downloadAuditDocx = async (req, res, next) => {
+  try {
+    const { id: sessionId } = req.params;
+    const session = await Session.findOne({ sessionId });
+    if (!session || !session.output || !session.auditTrails) {
+      return res.status(404).json({ error: 'No output generated yet' });
+    }
+
+    const buffer = await generateFullAuditDocx(
+      session.auditTrails, session.output, session.outputHeaders
+    );
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    );
+    res.setHeader('Content-Disposition', 'attachment; filename=IC_Audit_Trail.docx');
+    res.send(buffer);
   } catch (error) {
     next(error);
   }

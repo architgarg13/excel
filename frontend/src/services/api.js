@@ -41,3 +41,7 @@ export function generateOutput(sessionId) {
 export function getDownloadUrl(sessionId) {
   return `/api/session/${sessionId}/download`;
 }
+
+export function getAuditDownloadUrl(sessionId) {
+  return `/api/session/${sessionId}/download-audit`;
+}
