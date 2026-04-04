@@ -2,6 +2,31 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  body {
+    @apply antialiased;
+  }
+
+  /* Smoother scrollbars */
+  ::-webkit-scrollbar {
+    @apply w-2 h-2;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-gray-300 dark:bg-gray-600 rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-gray-400 dark:bg-gray-500;
+  }
+
+  /* Fix select options in dark mode */
+  .dark select option {
+    @apply bg-dark-card text-gray-200;
+  }
+}
+
 @layer components {
   .hover-lift {
     @apply transition-transform duration-300 ease-in-out;
@@ -15,7 +40,7 @@
   }
 
   .glass {
-    @apply backdrop-blur-md bg-white/70 dark:bg-dark-card/70;
+    @apply backdrop-blur-md bg-white/80 dark:bg-dark-card/80;
   }
 }
 
