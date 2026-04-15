@@ -13,20 +13,29 @@ function autoMatchHeaders(uploadedHeaders, expectedHeaders) {
   return smartAutoMatch(uploadedHeaders, expectedHeaders);
 }
 
-// Extract headers and data rows from a worksheet (with smart header row detection)
+// Extract headers and data rows from a worksheet (with smart header row detection).
+// Packs both headers and data rows to the same valid column indices so that
+// sheets with null header columns (leading or mid-row) stay correctly aligned.
 function extractSheetData(workbook, sheetName) {
   const sheet = workbook.Sheets[sheetName];
   const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
 
   const headerRowIdx = findHeaderRow(jsonData);
   const headerRow = jsonData[headerRowIdx] || [];
-  const uploadedHeaders = headerRow
-    .map((h) => (h != null && String(h).trim() !== '' ? String(h).trim() : null))
-    .filter((h) => h !== null);
 
-  const dataRows = jsonData.slice(headerRowIdx + 1).filter((row) =>
-    row.some((cell) => cell != null && String(cell).trim() !== '')
-  );
+  const keepIndices = [];
+  const uploadedHeaders = [];
+  for (let i = 0; i < headerRow.length; i++) {
+    const h = headerRow[i];
+    if (h != null && String(h).trim() !== '') {
+      keepIndices.push(i);
+      uploadedHeaders.push(String(h).trim());
+    }
+  }
+
+  const dataRows = jsonData.slice(headerRowIdx + 1)
+    .filter((row) => Array.isArray(row) && row.some((cell) => cell != null && String(cell).trim() !== ''))
+    .map((row) => keepIndices.map((i) => (row[i] != null ? row[i] : null)));
 
   return { uploadedHeaders, dataRows, headerRowIndex: headerRowIdx };
 }
